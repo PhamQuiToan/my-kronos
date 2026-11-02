@@ -24,7 +24,6 @@ TIMEFRAMES = {**{f'M{n}': n * 60 for n in (1, 5, 15, 30)},
               **{f'H{n}': n * 3600 for n in (1, 4)}, 'D1': 86400}
 FIELDS = ['open', 'high', 'low', 'close', 'volume']
 MAX_BYTES = 512 * 1024
-FORECAST_CACHE_TTL_SECONDS = 60
 FORECAST_CACHE_MAX_ENTRIES = 128
 LOG_PATH = Path(__file__).resolve().parent / 'logs' / 'forecast_api.log'
 _log_lock = threading.Lock()
@@ -216,10 +215,10 @@ def create_forecast_blueprint(predictor_factory=load_predictor):
             forecast_cache.move_to_end(key)
             return points, model_path
 
-    def cache_forecast(key, points, model_path):
+    def cache_forecast(key, points, model_path, timeframe):
         with cache_lock:
             forecast_cache[key] = (
-                time.monotonic() + FORECAST_CACHE_TTL_SECONDS, points, model_path)
+                time.monotonic() + TIMEFRAMES[timeframe], points, model_path)
             forecast_cache.move_to_end(key)
             while len(forecast_cache) > FORECAST_CACHE_MAX_ENTRIES:
                 forecast_cache.popitem(last=False)
@@ -327,7 +326,7 @@ def create_forecast_blueprint(predictor_factory=load_predictor):
             except Exception:
                 current_app.logger.error('Forecast failed request_id=%s', g.forecast_request_id)
                 return fail('forecast_failed', 'Model loading or forecast failed', 503)
-            cache_forecast(cache_digest, points, model_path)
+            cache_forecast(cache_digest, points, model_path, data['timeframe'])
         return jsonify(request_id=g.forecast_request_id, symbol=data['symbol'], timeframe=data['timeframe'],
                        generated_at=pd.Timestamp.now(tz='UTC').isoformat(),
                        last_input_timestamp=stamps.iloc[-1].isoformat(),

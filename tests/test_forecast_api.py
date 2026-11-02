@@ -102,21 +102,33 @@ class ForecastAPITest(unittest.TestCase):
         self.assertEqual(self.loads, 1)
 
     def test_forecast_result_cache_ignores_learn_and_refreshes_after_expiry(self):
-        first = self.post()
-        self.assertEqual(first.status_code, 200)
-        call_count = len(self.calls)
+        clock = [1000.0]
+        with patch('webui.forecast_api.time.monotonic', side_effect=lambda: clock[0]):
+            first = self.post()
+            self.assertEqual(first.status_code, 200)
+            self.body['learn'] = True
+            cached = self.post()
+            self.assertEqual(cached.status_code, 200)
+            self.assertNotEqual(first.get_json()['request_id'], cached.get_json()['request_id'])
+            self.assertEqual(len(self.calls), 1)
 
-        self.body['learn'] = True
-        cached = self.post()
-        self.assertEqual(cached.status_code, 200)
-        self.assertNotEqual(first.get_json()['request_id'], cached.get_json()['request_id'])
-        self.assertEqual(len(self.calls), call_count)
+            h1_body = copy.deepcopy(self.body)
+            h1_body['timeframe'] = 'H1'
+            h1_body['candles'][1]['timestamp'] = (
+                pd.Timestamp(h1_body['candles'][0]['timestamp']) + pd.Timedelta(hours=1)
+            ).isoformat()
+            self.assertEqual(self.post(body=h1_body).status_code, 200)
+            self.assertEqual(len(self.calls), 2)
 
-        self.body['candles'][0]['close'] = 100.5
-        with patch('webui.forecast_api.FORECAST_CACHE_TTL_SECONDS', 0):
+            clock[0] += 901
             self.assertEqual(self.post().status_code, 200)
-            self.assertEqual(self.post().status_code, 200)
-        self.assertEqual(len(self.calls), call_count + 2)
+            self.assertEqual(len(self.calls), 3)
+            self.assertEqual(self.post(body=h1_body).status_code, 200)
+            self.assertEqual(len(self.calls), 3)
+
+            clock[0] += 2700
+            self.assertEqual(self.post(body=h1_body).status_code, 200)
+            self.assertEqual(len(self.calls), 4)
 
     def test_authentication(self):
         for auth in ('', 'Bearer wrong', 'Basic test-only-secret', 'Bearer ü'):
