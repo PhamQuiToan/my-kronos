@@ -25,6 +25,10 @@ class DeployTest(unittest.TestCase):
         (self.source / 'webui/forecast_api.py').write_text('new source\n')
         (self.source / 'webui/.api_token').write_text('local-test-token')
         (self.target / 'server-only.txt').write_text('keep')
+        for directory, content in ((self.source, 'local state'), (self.target, 'server state')):
+            state = directory / 'webui/learning_state'
+            state.mkdir(parents=True, exist_ok=True)
+            (state / 'learning.sqlite3').write_text(content)
         (bins / 'ssh').write_text('#!/bin/bash\nexec bash -c "${!#}"\n')
         (bins / 'rsync').write_text(
             '#!/usr/bin/env python3\nimport os,sys\n'
@@ -53,6 +57,7 @@ class DeployTest(unittest.TestCase):
                          ['restart kronos-api', 'is-active --quiet kronos-api'])
         self.assertFalse((self.target / 'webui/.api_token').exists())
         self.assertTrue((self.target / 'server-only.txt').exists())
+        self.assertEqual((self.target / 'webui/learning_state/learning.sqlite3').read_text(), 'server state')
 
     def test_custom_command_sees_new_code(self):
         self.env['POST_DEPLOY_COMMAND'] = "grep -q 'new source' webui/forecast_api.py && touch updated"

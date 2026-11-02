@@ -5,7 +5,7 @@ DEPLOY_STAGE='kiểm tra cấu hình'
 trap 'status=$?; echo "Deploy thất bại ở bước: $DEPLOY_STAGE (exit $status)." >&2; exit "$status"' ERR
 
 SSH_HOST="${SSH_HOST:-45.77.252.226}"     # IP hoặc alias trong ~/.ssh/config
-SSH_USER="${SSH_USER-root}"              # Cho phép đặt rỗng để dùng user từ SSH config
+SSH_USER="${SSH_USER-root}"              # root là tên user, không phải biến $root
 SSH_PORT="${SSH_PORT:-22}"
 SSH_KEY="${SSH_KEY:-}"                   # Ví dụ: /Users/you/.ssh/id_ed25519; trống = SSH mặc định
 REMOTE_DIR="${REMOTE_DIR:-/opt/kronos}"   # Đường dẫn tuyệt đối, SSH user cần quyền ghi
