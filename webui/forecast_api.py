@@ -8,7 +8,7 @@ import os
 import threading
 import time
 import uuid
-from collections import deque
+from collections import OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -24,6 +24,8 @@ TIMEFRAMES = {**{f'M{n}': n * 60 for n in (1, 5, 15, 30)},
               **{f'H{n}': n * 3600 for n in (1, 4)}, 'D1': 86400}
 FIELDS = ['open', 'high', 'low', 'close', 'volume']
 MAX_BYTES = 512 * 1024
+FORECAST_CACHE_TTL_SECONDS = 60
+FORECAST_CACHE_MAX_ENTRIES = 128
 LOG_PATH = Path(__file__).resolve().parent / 'logs' / 'forecast_api.log'
 _log_lock = threading.Lock()
 
@@ -83,8 +85,6 @@ def validate(data):
         raise ValueError('JSON body must be an object')
     if set(data) - {'symbol', 'timeframe', 'candles', 'pred_len', 'temperature', 'top_p', 'sample_count', 'learn'}:
         raise ValueError('Unknown request fields')
-    if type(data.get('learn', False)) is not bool:
-        raise ValueError('learn must be a boolean declaring real market candles')
     if data.get('symbol') not in ('BTC', 'GOLD'):
         raise ValueError('symbol must be BTC or GOLD')
     if not isinstance(data.get('timeframe'), str) or data['timeframe'] not in TIMEFRAMES:
@@ -148,6 +148,8 @@ def create_forecast_blueprint(predictor_factory=load_predictor):
     slot = threading.Lock()
     rate_lock = threading.Lock()
     arrivals = deque()
+    forecast_cache = OrderedDict()
+    cache_lock = threading.Lock()
     cached = None
     cached_model = None
     learning_store = Store() if learning_enabled() else None
@@ -201,10 +203,30 @@ def create_forecast_blueprint(predictor_factory=load_predictor):
         current_app.logger.error('Forecast request failed request_id=%s', g.forecast_request_id)
         return fail('internal_error', 'Forecast request failed', 500)
 
-    def run(history, stamps, future, params, symbol, timeframe):
+    def get_cached_forecast(key):
+        now = time.monotonic()
+        with cache_lock:
+            entry = forecast_cache.get(key)
+            if entry is None:
+                return None
+            expires, points, model_path = entry
+            if expires <= now:
+                del forecast_cache[key]
+                return None
+            forecast_cache.move_to_end(key)
+            return points, model_path
+
+    def cache_forecast(key, points, model_path):
+        with cache_lock:
+            forecast_cache[key] = (
+                time.monotonic() + FORECAST_CACHE_TTL_SECONDS, points, model_path)
+            forecast_cache.move_to_end(key)
+            while len(forecast_cache) > FORECAST_CACHE_MAX_ENTRIES:
+                forecast_cache.popitem(last=False)
+
+    def run(history, stamps, future, params, model_path, symbol, timeframe):
         nonlocal cached, cached_model
         try:
-            model_path = learning_store.active(symbol, timeframe) if learning_store else BASE_MODEL
             if cached is None or cached_model != model_path:
                 try:
                     replacement = (load_predictor(model_path) if predictor_factory is load_predictor
@@ -267,32 +289,45 @@ def create_forecast_blueprint(predictor_factory=load_predictor):
             current_app.logger.warning('Forecast rejected request_id=%s reason=%s',
                                        g.forecast_request_id, message)
             return fail('invalid_request', message, 400)
-        if data.get('learn'):
-            if learning_store is None:
-                return fail('learning_disabled', 'Enable KRONOS_LEARNING_ENABLED to collect training data', 503)
+        model_path = BASE_MODEL
+        if learning_store is not None:
             try:
                 inserted = learning_store.collect(data['symbol'], data['timeframe'], history, stamps,
                                                   TIMEFRAMES[data['timeframe']])
+                model_path = learning_store.active(data['symbol'], data['timeframe'])
                 access_log.info('request_id=%s event=learning_collected inserted=%s',
                                 g.forecast_request_id, inserted)
             except Exception:
                 access_log.error('request_id=%s event=learning_store_failed', g.forecast_request_id)
                 return fail('learning_unavailable', 'Could not persist training candles; retry later', 503)
-        if not slot.acquire(blocking=False):
-            return fail('busy', 'Forecast worker is busy; retry later', 503)
-        try:
-            job = executor.submit(run, history, stamps, future, params, data['symbol'], data['timeframe'])
-        except Exception:
-            slot.release()
-            return fail('unavailable', 'Forecast worker is unavailable', 503)
-        try:
-            points, model_path = job.result(timeout=current_app.config.get('FORECAST_TIMEOUT_SECONDS', 120))
-        except TimeoutError:
-            # Keep the slot until inference actually finishes; never queue more work.
-            return fail('timeout', 'Forecast deadline exceeded', 504)
-        except Exception:
-            current_app.logger.error('Forecast failed request_id=%s', g.forecast_request_id)
-            return fail('forecast_failed', 'Model loading or forecast failed', 503)
+        cache_input = {key: value for key, value in data.items() if key != 'learn'}
+        cache_digest = hashlib.sha256(
+            (model_path + '\0' + json.dumps(cache_input, sort_keys=True, separators=(',', ':'))).encode()
+        ).hexdigest()
+        cached_result = get_cached_forecast(cache_digest)
+        if cached_result is None:
+            access_log.info('request_id=%s event=forecast_cache_miss', g.forecast_request_id)
+        else:
+            access_log.info('request_id=%s event=forecast_cache_hit', g.forecast_request_id)
+            points, model_path = cached_result
+        if cached_result is None:
+            if not slot.acquire(blocking=False):
+                return fail('busy', 'Forecast worker is busy; retry later', 503)
+            try:
+                job = executor.submit(
+                    run, history, stamps, future, params, model_path, data['symbol'], data['timeframe'])
+            except Exception:
+                slot.release()
+                return fail('unavailable', 'Forecast worker is unavailable', 503)
+            try:
+                points, model_path = job.result(timeout=current_app.config.get('FORECAST_TIMEOUT_SECONDS', 120))
+            except TimeoutError:
+                # Keep the slot until inference actually finishes; never queue more work.
+                return fail('timeout', 'Forecast deadline exceeded', 504)
+            except Exception:
+                current_app.logger.error('Forecast failed request_id=%s', g.forecast_request_id)
+                return fail('forecast_failed', 'Model loading or forecast failed', 503)
+            cache_forecast(cache_digest, points, model_path)
         return jsonify(request_id=g.forecast_request_id, symbol=data['symbol'], timeframe=data['timeframe'],
                        generated_at=pd.Timestamp.now(tz='UTC').isoformat(),
                        last_input_timestamp=stamps.iloc[-1].isoformat(),

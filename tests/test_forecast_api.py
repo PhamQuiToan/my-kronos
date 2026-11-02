@@ -23,7 +23,8 @@ class ForecastAPITest(unittest.TestCase):
         self.addCleanup(log_patch.stop)
         self.addCleanup(self.close_log)
         self.close_log()
-        self.env = patch.dict('os.environ', {'KRONOS_API_TOKEN': 'test-only-secret'})
+        self.env = patch.dict('os.environ', {'KRONOS_API_TOKEN': 'test-only-secret',
+                                            'KRONOS_LEARNING_ENABLED': '0'})
         self.env.start()
         self.addCleanup(self.env.stop)
         self.calls = []
@@ -50,7 +51,7 @@ class ForecastAPITest(unittest.TestCase):
         self.assertEqual([r.status_code for r in responses], [200, 400, 401])
         contents = self.log_path.read_text()
         for response in responses:
-            expected_lines = 2 if response.status_code == 401 else 3
+            expected_lines = {200: 4, 400: 3, 401: 2}[response.status_code]
             self.assertEqual(contents.count(response.get_json()['request_id']), expected_lines)
             self.assertIn(f'status={response.status_code}', contents)
         self.assertIn('symbol must be BTC or GOLD', contents)
@@ -99,6 +100,23 @@ class ForecastAPITest(unittest.TestCase):
             self.assertEqual(response.headers['X-Request-ID'], result['request_id'])
             self.assertEqual(self.calls[-1]['df']['close'].tolist(), [101, 102])
         self.assertEqual(self.loads, 1)
+
+    def test_forecast_result_cache_ignores_learn_and_refreshes_after_expiry(self):
+        first = self.post()
+        self.assertEqual(first.status_code, 200)
+        call_count = len(self.calls)
+
+        self.body['learn'] = True
+        cached = self.post()
+        self.assertEqual(cached.status_code, 200)
+        self.assertNotEqual(first.get_json()['request_id'], cached.get_json()['request_id'])
+        self.assertEqual(len(self.calls), call_count)
+
+        self.body['candles'][0]['close'] = 100.5
+        with patch('webui.forecast_api.FORECAST_CACHE_TTL_SECONDS', 0):
+            self.assertEqual(self.post().status_code, 200)
+            self.assertEqual(self.post().status_code, 200)
+        self.assertEqual(len(self.calls), call_count + 2)
 
     def test_authentication(self):
         for auth in ('', 'Bearer wrong', 'Basic test-only-secret', 'Bearer ü'):

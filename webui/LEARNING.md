@@ -40,25 +40,29 @@ model base cần đáng kể RAM và training có thể kéo dài. Worker riêng
 RAM với API; cần đủ RAM cho cả hai. Có thể đổi KRONOS_TRAIN_DEVICE sang cuda khi
 có GPU phù hợp. Không cài hoặc khởi chạy training trên server chỉ bằng deploy.sh.
 
-## Request có dữ liệu thật
+## Thu thập dữ liệu request
 
-Thêm `"learn": true` vào request POST /api/forecast hiện có. Trường này là lời
-xác nhận của client rằng toàn bộ candles là dữ liệu thị trường thực, không phải
-output dự báo, dữ liệu demo hoặc tổng hợp. Server không thể xác minh nguồn thị
-trường chỉ từ OHLCV. Không bật learn cho file examples/forecast-request.json.
-Mỗi symbol/timeframe cần dùng một nguồn dữ liệu thống nhất; không trộn giá vàng
-hoặc volume từ các broker khác nhau vào cùng cặp.
+Khi `KRONOS_LEARNING_ENABLED=1`, API tự lưu nến của mọi request đã xác thực và
+vượt kiểm tra, không phụ thuộc trường `learn` (được giữ lại nhưng bỏ qua để
+tương thích client cũ). Bật tính năng này chỉ khi mọi request gửi vào API đều
+chứa dữ liệu thị trường thực; server không thể phân biệt OHLCV thật với dữ liệu
+demo, tổng hợp hoặc output dự báo. Không gửi dữ liệu mẫu từ
+`webui/examples/forecast-request.json` khi đang bật thu thập. Mỗi symbol/timeframe
+cần dùng một nguồn dữ liệu thống nhất; không trộn giá vàng hoặc volume từ các
+broker khác nhau vào cùng cặp.
 
 Timestamp được hiểu là thời điểm MỞ nến UTC. Chỉ nến có timestamp + timeframe
 <= giờ server mới được lưu. Nến đang mở vẫn được dùng cho forecast nếu client gửi,
 nhưng không được thu thập để train. Khi nến đó đóng, client cần gửi lại giá cuối.
 Nến trùng (symbol, timeframe, timestamp) bị bỏ qua; bản đóng đầu tiên được giữ
 nguyên, không ghi đè bằng retry hoặc dữ liệu thay đổi sau này. Không lưu forecast
-output để training. Request không có learn giữ hành vi cũ. Nếu learn=true nhưng
-chức năng tắt hoặc lưu DB thất bại, API trả 503; có thể retry an toàn.
+output để training. Trường `learn` không bật/tắt thu thập; khi tính năng learning
+bật, lỗi lưu DB trả 503 và có thể retry an toàn.
 
 Dữ liệu lưu trước inference nên nến vẫn được lưu nếu inference bận/lỗi/timeout.
 Lưu trữ dùng SQLite transaction; input sai hoặc token sai không được thu thập.
+Worker kiểm tra mỗi ngày lúc 03:00 UTC; khi đạt ngưỡng dưới đây, training và
+đánh giá sẽ chạy trong lượt kiểm tra tiếp theo, không chạy trong HTTP request.
 
 ## Chọn model
 

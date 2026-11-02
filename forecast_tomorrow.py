@@ -17,7 +17,7 @@ import certifi
 
 ROOT = Path(__file__).resolve().parent
 TIMEZONE = ZoneInfo("Asia/Ho_Chi_Minh")
-UPLOAD_URL = "https://matsea.metatechsolutions.vn/api/forecast/upload"
+UPLOAD_URL = "https://matsea.metatechsolutions.vn/api/csv_forecast/upload"
 UPLOAD_SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 ASSETS = {
     "GOLD": "paxgusdt",

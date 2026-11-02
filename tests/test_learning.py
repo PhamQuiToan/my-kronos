@@ -115,7 +115,7 @@ class LearningTest(unittest.TestCase):
         self.assertEqual(self.store.active('BTC', 'M15'), 'another-model')
         self.assertEqual(self.store.cutoff('BTC', 'M15'), 1)
 
-    def test_api_collection_opt_in_and_model_switch(self):
+    def test_api_collection_and_model_switch(self):
         from flask import Flask
         from webui.forecast_api import create_forecast_blueprint
         class Predictor:
@@ -138,10 +138,10 @@ class LearningTest(unittest.TestCase):
                 return client.post('/api/forecast', json=body,
                                    headers={'Authorization': 'Bearer test-secret'} if auth else {})
             self.assertEqual(post().status_code, 200)
-            self.assertTrue(self.store.snapshot('BTC', 'M15').empty)
+            self.assertEqual(len(self.store.snapshot('BTC', 'M15')), 2)
             body['learn'] = True
             self.assertEqual(post(False).status_code, 401)
-            self.assertTrue(self.store.snapshot('BTC', 'M15').empty)
+            self.assertEqual(len(self.store.snapshot('BTC', 'M15')), 2)
             self.assertEqual(post().status_code, 200)
             self.assertEqual(len(self.store.snapshot('BTC', 'M15')), 2)
             self.store.finish('BTC', 'M15', 1, {}, candidate='test-model', expected=BASE_MODEL)
@@ -149,7 +149,7 @@ class LearningTest(unittest.TestCase):
             self.assertEqual(len(loads), 2)
             self.store.rollback('BTC', 'M15')
             self.assertEqual(post().get_json()['model'], BASE_MODEL)
-            self.assertEqual(len(loads), 3)
+            self.assertEqual(len(loads), 2)
 
     def test_bad_checkpoint_falls_back_to_base_not_another_market(self):
         from flask import Flask

@@ -46,9 +46,9 @@ File request mẫu dùng giá minh họa; thay bằng dữ liệu thị trườn
 ## Request
 
 Fine-tune nền tùy chọn: xem [LEARNING.md](LEARNING.md) để bật thu thập nến thật,
-worker theo lịch, đánh giá và rollback. Request hỗ trợ `learn` (boolean, mặc định
-false); chỉ đặt true cho dữ liệu thị trường thực. Model response có thể là đường
-dẫn checkpoint riêng theo symbol/timeframe khi tính năng này được bật.
+worker theo lịch, đánh giá và rollback. Trường `learn` cũ được chấp nhận nhưng
+bỏ qua; việc thu thập do cấu hình server quyết định. Model response có thể là
+đường dẫn checkpoint riêng theo symbol/timeframe khi tính năng này được bật.
 
 ### Log khi gọi API
 
@@ -98,8 +98,36 @@ Model mặc định `NeoQuasar/Kronos-base` (hoặc checkpoint đã qua gate khi
 `KRONOS_API_DEVICE` có thể chỉ định device được PyTorch hỗ trợ.
 Model được lazy-load và cache riêng cho API, không bị đổi bởi `/api/load-model`
 của Web UI. Lần đầu cần có weights trong cache hoặc kết nối Hugging Face.
+Kết quả forecast thành công được cache trong bộ nhớ 60 giây, tối đa 128 đầu vào
+khác nhau trên mỗi process. Cache chỉ dùng lại kết quả inference giống hệt và
+cùng model; request vẫn được xác thực, kiểm tra và xử lý thu thập learning bình
+thường. `generated_at` và `request_id` được tạo mới mỗi response. Cache không
+được chia sẻ giữa các process; response vẫn gửi `Cache-Control: no-store`.
 Pipeline hiện có tự tính input `amount` từ volume × giá OHLC trung bình khi thiếu;
 API không thêm giá trị output giả. Model thật hiện trả OHLCV và amount.
+
+### Ví dụ cách cache hoạt động
+
+Cache dùng khóa gồm model hiện hành và toàn bộ nội dung request ngoại trừ `learn`.
+Do đó cùng nến, symbol, timeframe và tham số dự báo sẽ dùng lại forecast nếu gửi
+lại trong 60 giây:
+
+1. Request A gửi candles đến `12:00`, `pred_len=24`: cache miss, API chạy model
+   và lưu kết quả thành công.
+2. Request B gửi đúng input đó sau 20 giây: cache hit, API không chạy model lần
+   nữa. Response vẫn có `request_id` và `generated_at` mới, nhưng forecast được
+   dùng lại từ A.
+3. Nếu đổi nến cuối, `pred_len`, `temperature`, `top_p`, `sample_count`, symbol
+   hoặc timeframe, khóa thay đổi và API chạy model cho input mới.
+4. Gửi lại input ban đầu sau khi kết quả đã quá 60 giây sẽ chạy model lại.
+
+Với `KRONOS_LEARNING_ENABLED=1`, request hợp lệ vẫn đi qua bước lưu nến trước khi
+tra cache. Vì vậy cache hit không ngăn thu thập nến mới; nến đã lưu được khử trùng
+lặp theo symbol/timeframe/timestamp. Giá trị `learn` không làm thay đổi cache key.
+Cache chỉ nằm trong RAM của từng process, bị xóa khi process restart và có thể bị
+loại sớm hơn nếu process đã cache 128 input khác nhau (các kết quả ít được dùng
+gần đây bị loại trước). `Cache-Control: no-store` ngăn client/proxy coi response
+là response cache; cache 60 giây này chỉ do API quản lý nội bộ.
 
 Mỗi process có một worker, không xếp hàng request forecast. Khi đang chạy, request
 khác nhận 503. Deadline mặc định 120 giây (bao gồm nạp model), cấu hình nội bộ bằng
