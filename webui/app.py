@@ -9,6 +9,8 @@ from flask_cors import CORS
 import sys
 import warnings
 import datetime
+from pathlib import Path
+from flask import send_from_directory
 warnings.filterwarnings('ignore')
 
 # Add project root directory to path
@@ -23,6 +25,11 @@ except ImportError:
 
 app = Flask(__name__)
 CORS(app)
+
+from webui.forecast_api import create_forecast_blueprint
+app.register_blueprint(create_forecast_blueprint())
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # Global variables to store models
 tokenizer = None
@@ -75,6 +82,26 @@ def load_data_files():
     
     return data_files
 
+
+def load_forecast_files():
+    """Return generated forecast CSV files that can be opened in the dashboard."""
+    candidates = list(PROJECT_ROOT.glob('future_prediction*.csv'))
+    prediction_result = PROJECT_ROOT / 'prediction_result.csv'
+    if prediction_result.is_file():
+        candidates.append(prediction_result)
+
+    files = []
+    for path in sorted(set(candidates), key=lambda item: item.stat().st_mtime, reverse=True):
+        stat = path.stat()
+        files.append({
+            'name': path.name,
+            'size': stat.st_size,
+            'modified_at': datetime.datetime.fromtimestamp(
+                stat.st_mtime, tz=datetime.timezone.utc
+            ).isoformat(),
+        })
+    return files
+
 def load_data_file(file_path):
     """Load data file"""
     try:
@@ -92,12 +119,12 @@ def load_data_file(file_path):
         
         # Process timestamp column
         if 'timestamps' in df.columns:
-            df['timestamps'] = pd.to_datetime(df['timestamps'])
+            df['timestamps'] = pd.to_datetime(df['timestamps'], utc=True).dt.tz_localize(None)
         elif 'timestamp' in df.columns:
-            df['timestamps'] = pd.to_datetime(df['timestamp'])
+            df['timestamps'] = pd.to_datetime(df['timestamp'], utc=True).dt.tz_localize(None)
         elif 'date' in df.columns:
             # If column name is 'date', rename it to 'timestamps'
-            df['timestamps'] = pd.to_datetime(df['date'])
+            df['timestamps'] = pd.to_datetime(df['date'], utc=True).dt.tz_localize(None)
         else:
             # If no timestamp column exists, create one
             df['timestamps'] = pd.date_range(start='2024-01-01', periods=len(df), freq='1H')
@@ -331,6 +358,27 @@ def create_prediction_chart(df, pred_df, lookback, pred_len, actual_df=None, his
 def index():
     """Home page"""
     return render_template('index.html')
+
+
+@app.route('/dashboard')
+def dashboard():
+    """Standalone forecast CSV dashboard."""
+    return render_template('dashboard.html')
+
+
+@app.route('/api/forecast-files')
+def get_forecast_files():
+    """List generated forecast CSV files available at the project root."""
+    return jsonify(load_forecast_files())
+
+
+@app.route('/api/forecast-files/<path:filename>')
+def get_forecast_file(filename):
+    """Serve only a forecast CSV returned by the forecast file listing."""
+    allowed_names = {item['name'] for item in load_forecast_files()}
+    if filename != os.path.basename(filename) or filename not in allowed_names:
+        return jsonify({'error': 'Forecast file not found'}), 404
+    return send_from_directory(PROJECT_ROOT, filename, mimetype='text/csv')
 
 @app.route('/api/data-files')
 def get_data_files():

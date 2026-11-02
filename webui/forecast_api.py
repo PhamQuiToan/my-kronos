@@ -1,0 +1,279 @@
+"""Authenticated client-candle forecast API, with bounded per-process inference."""
+import hashlib
+import hmac
+import json
+import logging
+import math
+import os
+import threading
+import time
+import uuid
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+
+import pandas as pd
+from flask import Blueprint, Flask, current_app, g, jsonify, request
+from werkzeug.exceptions import HTTPException
+
+from webui.api_token import read_token
+
+TIMEFRAMES = {**{f'M{n}': n * 60 for n in (1, 5, 15, 30)},
+              **{f'H{n}': n * 3600 for n in (1, 4)}, 'D1': 86400}
+FIELDS = ['open', 'high', 'low', 'close', 'volume']
+MAX_BYTES = 512 * 1024
+LOG_PATH = Path(__file__).resolve().parent / 'logs' / 'forecast_api.log'
+_log_lock = threading.Lock()
+
+
+def gold_future_timestamps(stamps, interval, count):
+    """Skip intraday slots missing on multiple dates, unless observed trading there.
+
+    This is an input-derived heuristic, not an exchange holiday/weekend calendar.
+    """
+    day = pd.Timedelta(days=1)
+    missing_dates = {}
+    observed = {stamp - stamp.normalize() for stamp in stamps}
+    for a, b in zip(stamps, stamps[1:]):
+        if interval < b - a < day:
+            candidate = a + interval
+            while candidate < b:
+                slot = candidate - candidate.normalize()
+                missing_dates.setdefault(slot, set()).add(candidate.date())
+                candidate += interval
+    closed = {slot for slot, dates in missing_dates.items()
+              if len(dates) >= 2 and slot not in observed}
+    points = []
+    candidate = stamps[-1]
+    while len(points) < count:
+        candidate += interval
+        if candidate - candidate.normalize() not in closed:
+            points.append(candidate)
+    return pd.Series(points)
+
+
+def forecast_logger():
+    logger = logging.getLogger('kronos.forecast.access')
+    with _log_lock:
+        if not logger.handlers:
+            LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            handler = RotatingFileHandler(LOG_PATH, maxBytes=5 * 1024 * 1024,
+                                          backupCount=3, encoding='utf-8', delay=True)
+            handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(message)s'))
+            logger.addHandler(handler)
+            logger.setLevel(logging.INFO)
+            logger.propagate = False
+    return logger
+
+
+def load_predictor():
+    # Lazy import keeps API validation and tests independent of model installation.
+    from model import Kronos, KronosPredictor, KronosTokenizer
+    tokenizer = KronosTokenizer.from_pretrained('NeoQuasar/Kronos-Tokenizer-base')
+    model = Kronos.from_pretrained('NeoQuasar/Kronos-base')
+    tokenizer.eval()
+    model.eval()
+    return KronosPredictor(model, tokenizer, device=os.getenv('KRONOS_API_DEVICE', 'cpu'), max_context=512)
+
+
+def validate(data):
+    if not isinstance(data, dict):
+        raise ValueError('JSON body must be an object')
+    if set(data) - {'symbol', 'timeframe', 'candles', 'pred_len', 'temperature', 'top_p', 'sample_count'}:
+        raise ValueError('Unknown request fields')
+    if data.get('symbol') not in ('BTC', 'GOLD'):
+        raise ValueError('symbol must be BTC or GOLD')
+    if not isinstance(data.get('timeframe'), str) or data['timeframe'] not in TIMEFRAMES:
+        raise ValueError('timeframe must be M1, M5, M15, M30, H1, H4 or D1')
+    candles = data.get('candles')
+    if not isinstance(candles, list) or not 2 <= len(candles) <= 512:
+        raise ValueError('Provide 2 to 512 candles; all supplied candles are used')
+    params = {}
+    for name, default, minimum, maximum in [('pred_len', 24, 1, 120), ('sample_count', 1, 1, 5),
+                                           ('temperature', 1.0, 0.01, 2), ('top_p', 0.9, 0.01, 1)]:
+        value = data.get(name, default)
+        if type(value) not in (int, float) or not minimum <= value <= maximum or not math.isfinite(value):
+            raise ValueError(f'Invalid {name}: expected {minimum}..{maximum}')
+        if name in ('pred_len', 'sample_count') and type(value) is not int:
+            raise ValueError(f'{name} must be an integer')
+        params[name] = value
+    stamps, rows = [], []
+    for candle in candles:
+        if not isinstance(candle, dict) or set(candle) != {'timestamp', *FIELDS}:
+            raise ValueError('Each candle requires timestamp and exactly OHLCV fields')
+        if not isinstance(candle['timestamp'], str):
+            raise ValueError('timestamp must be an ISO 8601 string with timezone')
+        try:
+            stamp = pd.Timestamp(candle['timestamp'])
+            if pd.isna(stamp) or stamp.tzinfo is None:
+                raise ValueError()
+            stamp = stamp.tz_convert('UTC')
+            # Validate representability by the model timestamp pipeline.
+            _ = stamp.value
+        except (ValueError, TypeError, OverflowError):
+            raise ValueError('timestamp must be a valid ISO 8601 string with timezone') from None
+        values = [candle[key] for key in FIELDS]
+        if any(type(v) not in (int, float) or abs(v) > 1e15 or not math.isfinite(v) for v in values):
+            raise ValueError('OHLCV must contain finite JSON numbers with magnitude at most 1e15')
+        o, h, l, c, v = values
+        if min(o, h, l, c) <= 0 or v < 0 or l > min(o, c) or h < max(o, c) or l > h:
+            raise ValueError('Invalid OHLC bounds, price or volume')
+        stamps.append(stamp)
+        rows.append(values)
+    interval = pd.Timedelta(seconds=TIMEFRAMES[data['timeframe']])
+    if data['symbol'] == 'GOLD':
+        if any(b <= a or (b - a) % interval != pd.Timedelta(0)
+               for a, b in zip(stamps, stamps[1:])):
+            raise ValueError('GOLD candles must be strictly increasing with gaps that are multiples of the timeframe')
+    elif any(b - a != interval for a, b in zip(stamps, stamps[1:])):
+        raise ValueError('Candles must be strictly increasing with exactly one timeframe between candles')
+    try:
+        if data['symbol'] == 'GOLD':
+            future = gold_future_timestamps(stamps, interval, params['pred_len'])
+        else:
+            future = pd.Series(pd.date_range(stamps[-1] + interval, periods=params['pred_len'], freq=interval))
+    except (ValueError, OverflowError):
+        raise ValueError('Forecast timestamps are out of range') from None
+    return pd.DataFrame(rows, columns=FIELDS), pd.Series(stamps), future, params
+
+
+def create_forecast_blueprint(predictor_factory=load_predictor):
+    bp = Blueprint('forecast_api', __name__)
+    access_log = forecast_logger()
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='kronos-forecast')
+    slot = threading.Lock()
+    rate_lock = threading.Lock()
+    arrivals = deque()
+    cached = None
+
+    def fail(code, message, status):
+        return jsonify(error={'code': code, 'message': message}, request_id=g.forecast_request_id), status
+
+    @bp.before_request
+    def protect():
+        g.forecast_request_id = uuid.uuid4().hex
+        g.forecast_started = time.monotonic()
+        access_log.info('request_id=%s event=started method=%s path=/api/forecast',
+                        g.forecast_request_id, request.method)
+        token = read_token()
+        if not token.strip():
+            return fail('unavailable', 'Forecast authentication is not configured', 503)
+        auth = request.headers.get('Authorization', '').split()
+        supplied = auth[1] if len(auth) == 2 and auth[0].lower() == 'bearer' else ''
+        if not hmac.compare_digest(hashlib.sha256(supplied.encode()).digest(), hashlib.sha256(token.encode()).digest()):
+            response, status = fail('unauthorized', 'Valid Bearer token required', 401)
+            response.headers['WWW-Authenticate'] = 'Bearer'
+            return response, status
+        with rate_lock:
+            now = time.monotonic()
+            while arrivals and arrivals[0] <= now - 60:
+                arrivals.popleft()
+            if len(arrivals) >= 10:
+                response, status = fail('rate_limited', 'Limit is 10 authenticated requests per minute', 429)
+                response.headers['Retry-After'] = '60'
+                return response, status
+            arrivals.append(now)
+
+    @bp.after_request
+    def headers(response):
+        response.headers['X-Request-ID'] = g.forecast_request_id
+        response.headers['Cache-Control'] = 'no-store'
+        error = (response.get_json(silent=True) or {}).get('error', {})
+        access_log.log(logging.WARNING if response.status_code >= 400 else logging.INFO,
+                       'request_id=%s event=completed status=%s duration_ms=%.1f code=%s reason=%s',
+                       g.forecast_request_id, response.status_code,
+                       (time.monotonic() - g.forecast_started) * 1000,
+                       error.get('code', '-'), json.dumps(error.get('message', '-'), ensure_ascii=False))
+        return response
+
+    @bp.errorhandler(HTTPException)
+    def http_error(exc):
+        return fail('http_error', exc.name, exc.code)
+
+    @bp.errorhandler(Exception)
+    def unexpected_error(exc):
+        current_app.logger.error('Forecast request failed request_id=%s', g.forecast_request_id)
+        return fail('internal_error', 'Forecast request failed', 500)
+
+    def run(history, stamps, future, params):
+        nonlocal cached
+        try:
+            if cached is None:
+                cached = predictor_factory()
+            result = cached.predict(df=history, x_timestamp=stamps.dt.tz_localize(None),
+                                    y_timestamp=future.dt.tz_localize(None), pred_len=params['pred_len'],
+                                    T=params['temperature'], top_p=params['top_p'],
+                                    sample_count=params['sample_count'], verbose=False)
+            columns = [key for key in [*FIELDS, 'amount'] if key in result.columns]
+            if len(result) != params['pred_len'] or not set(FIELDS[:4]).issubset(columns):
+                raise RuntimeError('Invalid model result shape')
+            points = []
+            for stamp, (_, row) in zip(future, result.iterrows()):
+                values = {key: float(row[key]) for key in columns}
+                if not all(math.isfinite(v) for v in values.values()):
+                    raise RuntimeError('Nonfinite model output')
+                points.append({'timestamp': stamp.isoformat(), **values})
+            return points
+        finally:
+            slot.release()
+
+    @bp.route('/api/forecast', methods=['POST'])
+    def forecast():
+        if request.content_length is not None and request.content_length > MAX_BYTES:
+            return fail('payload_too_large', 'Request limit is 512 KiB', 413)
+        if not request.is_json:
+            return fail('unsupported_media_type', 'Content-Type application/json required', 415)
+        # Bound reads even for chunked requests without Content-Length.
+        raw = request.stream.read(MAX_BYTES + 1)
+        if len(raw) > MAX_BYTES:
+            return fail('payload_too_large', 'Request limit is 512 KiB', 413)
+        access_log.info('request_id=%s event=input body=%s',
+                        g.forecast_request_id,
+                        json.dumps(raw.decode('utf-8', errors='replace'), ensure_ascii=False))
+        current_app.logger.debug(
+            'Forecast request input request_id=%s body=%s',
+            g.forecast_request_id, raw.decode('utf-8', errors='replace'))
+        try:
+            data = json.loads(raw)
+        except (ValueError, TypeError, RecursionError):
+            message = 'Request body must contain valid JSON'
+            current_app.logger.warning('Forecast rejected request_id=%s reason=%s',
+                                       g.forecast_request_id, message)
+            return fail('invalid_request', message, 400)
+        try:
+            history, stamps, future, params = validate(data)
+        except ValueError as exc:
+            message = str(exc)
+            current_app.logger.warning('Forecast rejected request_id=%s reason=%s',
+                                       g.forecast_request_id, message)
+            return fail('invalid_request', message, 400)
+        if not slot.acquire(blocking=False):
+            return fail('busy', 'Forecast worker is busy; retry later', 503)
+        try:
+            job = executor.submit(run, history, stamps, future, params)
+        except Exception:
+            slot.release()
+            return fail('unavailable', 'Forecast worker is unavailable', 503)
+        try:
+            points = job.result(timeout=current_app.config.get('FORECAST_TIMEOUT_SECONDS', 120))
+        except TimeoutError:
+            # Keep the slot until inference actually finishes; never queue more work.
+            return fail('timeout', 'Forecast deadline exceeded', 504)
+        except Exception:
+            current_app.logger.error('Forecast failed request_id=%s', g.forecast_request_id)
+            return fail('forecast_failed', 'Model loading or forecast failed', 503)
+        return jsonify(request_id=g.forecast_request_id, symbol=data['symbol'], timeframe=data['timeframe'],
+                       generated_at=pd.Timestamp.now(tz='UTC').isoformat(),
+                       last_input_timestamp=stamps.iloc[-1].isoformat(),
+                       model='NeoQuasar/Kronos-base', parameters={**params, 'lookback': len(history)},
+                       forecast=points)
+
+    return bp
+
+
+def create_app():
+    """Dedicated API server exposing only the authenticated forecast endpoint."""
+    app = Flask(__name__)
+    app.register_blueprint(create_forecast_blueprint())
+    return app

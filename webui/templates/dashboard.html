@@ -1,0 +1,415 @@
+<!doctype html>
+<html lang="vi">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Kronos Forecast Dashboard</title>
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+    <style>
+        :root {
+            --bg: #07101f;
+            --panel: #0d182a;
+            --panel-soft: #101d31;
+            --line: #24344d;
+            --muted: #8fa0bb;
+            --text: #eef4ff;
+            --green: #22d39a;
+            --red: #ff5f72;
+            --blue: #7c9cff;
+            --gold: #f5bd4f;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background: var(--bg);
+            color: var(--text);
+            font: 14px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        }
+        button, input, select { font: inherit; }
+        .topbar {
+            min-height: 72px;
+            border-bottom: 1px solid #1d2b42;
+            background: rgba(11, 23, 42, .94);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 20px;
+            padding: 14px max(24px, calc((100vw - 1500px) / 2));
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            backdrop-filter: blur(14px);
+        }
+        .brand { display: flex; align-items: center; gap: 12px; }
+        .asset-icon {
+            width: 42px; height: 42px; border-radius: 12px;
+            display: grid; place-items: center;
+            background: linear-gradient(145deg, #ffca4f, #f49b16);
+            color: #172033; font-size: 22px; font-weight: 900;
+            box-shadow: 0 7px 24px rgba(245, 189, 79, .2);
+        }
+        h1 { font-size: 20px; margin: 0; letter-spacing: -.02em; }
+        .subtitle { color: var(--muted); font-size: 12px; margin-top: 3px; }
+        .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+        .button {
+            border: 1px solid #33435d;
+            color: var(--text); background: #142136;
+            padding: 9px 13px; border-radius: 9px; cursor: pointer;
+            transition: .18s ease;
+        }
+        .button:hover { border-color: var(--blue); transform: translateY(-1px); }
+        .button.primary { background: #4263eb; border-color: #5f7cff; }
+        .button:disabled { cursor: not-allowed; opacity: .5; transform: none; }
+        .file-button input { display: none; }
+        .server-files { min-width: 280px; }
+        .shell { max-width: 1500px; margin: auto; padding: 22px 24px 40px; }
+        .notice {
+            color: #f8d27c; background: rgba(126, 84, 10, .28);
+            border: 1px solid #70501a; border-radius: 10px;
+            padding: 10px 14px; margin-bottom: 14px; font-size: 12px;
+        }
+        .notice.error { color: #ffc3ca; background: rgba(126, 24, 40, .3); border-color: #7f2938; }
+        .empty {
+            border: 1px dashed #405271; border-radius: 14px;
+            color: var(--muted); text-align: center; padding: 62px 20px;
+            background: rgba(13, 24, 42, .72);
+        }
+        .empty strong { display: block; color: var(--text); font-size: 18px; margin-bottom: 8px; }
+        .dashboard[hidden], .empty[hidden] { display: none; }
+        .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 14px; }
+        .card {
+            border: 1px solid var(--line); background: var(--panel);
+            border-radius: 13px; box-shadow: 0 12px 32px rgba(0,0,0,.12);
+        }
+        .kpi { padding: 17px; min-height: 112px; }
+        .kpi-label { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+        .kpi-value { font-size: 25px; font-weight: 760; letter-spacing: -.025em; }
+        .kpi-meta { color: var(--muted); font-size: 11px; margin-top: 5px; }
+        .positive { color: var(--green); }
+        .negative { color: var(--red); }
+        .workspace { display: grid; grid-template-columns: minmax(0, 2.15fr) minmax(290px, .85fr); gap: 14px; }
+        .panel-head {
+            min-height: 53px; padding: 12px 16px;
+            border-bottom: 1px solid var(--line);
+            display: flex; align-items: center; justify-content: space-between; gap: 12px;
+        }
+        .panel-title { font-weight: 700; }
+        .filters { display: flex; gap: 8px; }
+        select, .search {
+            background: #121f34; color: var(--text); border: 1px solid #33445e;
+            border-radius: 8px; padding: 8px 10px;
+        }
+        #forecast-chart { height: 550px; }
+        .chart-foot { color: var(--muted); font-size: 11px; padding: 0 16px 14px; }
+        .analytics { padding: 5px 16px 14px; }
+        .metric { padding: 13px 0; border-bottom: 1px solid var(--line); }
+        .metric:last-of-type { border-bottom: 0; }
+        .metric-label { color: var(--muted); font-size: 11px; }
+        .metric-value { font-size: 17px; font-weight: 720; margin: 3px 0; }
+        .metric-note { color: var(--muted); font-size: 11px; }
+        .mini-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
+        .mini { border: 1px solid var(--line); border-radius: 9px; padding: 11px; background: var(--panel-soft); }
+        .mini span { color: var(--muted); font-size: 10px; display: block; }
+        .mini strong { display: block; font-size: 15px; margin-top: 3px; }
+        .source { color: var(--muted); font-size: 10px; margin-top: 12px; word-break: break-all; }
+        .table-card { margin-top: 14px; overflow: hidden; }
+        .table-wrap { max-height: 430px; overflow: auto; }
+        table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+        th {
+            position: sticky; top: 0; z-index: 2;
+            background: #122039; color: #afc5ea; font-size: 11px;
+            text-align: right; padding: 11px 13px; border-bottom: 1px solid var(--line);
+        }
+        th:first-child, td:first-child { text-align: left; }
+        td { padding: 10px 13px; text-align: right; border-bottom: 1px solid #19283e; font-size: 12px; }
+        tbody tr:hover { background: #101f35; }
+        .count { color: var(--muted); font-size: 11px; border: 1px solid #33445e; border-radius: 12px; padding: 5px 9px; }
+        @media (max-width: 980px) {
+            .kpis { grid-template-columns: repeat(2, 1fr); }
+            .workspace { grid-template-columns: 1fr; }
+            .topbar { position: static; }
+        }
+        @media (max-width: 620px) {
+            .topbar { align-items: flex-start; flex-direction: column; }
+            .shell { padding: 14px 10px 30px; }
+            .kpis { grid-template-columns: 1fr; }
+            .filters { width: 100%; }
+            .filters select { flex: 1; }
+            .actions, .server-files { width: 100%; }
+            .table-wrap { max-height: 520px; }
+        }
+    </style>
+</head>
+<body>
+    <header class="topbar">
+        <div class="brand">
+            <div class="asset-icon" id="asset-icon">₿</div>
+            <div>
+                <h1 id="dashboard-title">Forecast Dashboard</h1>
+                <div class="subtitle" id="dashboard-subtitle">Phân tích dữ liệu dự báo Kronos</div>
+            </div>
+        </div>
+        <div class="actions">
+            <a class="button" href="/">← Kronos UI</a>
+            <select id="server-file" class="server-files" aria-label="File forecast trên server">
+                <option value="">Đang tìm file forecast…</option>
+            </select>
+            <button class="button primary" id="open-server-file" disabled>Mở file</button>
+            <label class="button primary file-button">↑ Tải CSV<input id="csv-file" type="file" accept=".csv,text/csv"></label>
+            <button class="button" id="export-csv" disabled>Xuất CSV</button>
+            <button class="button" id="reset-dashboard">Khôi phục</button>
+        </div>
+    </header>
+
+    <main class="shell">
+        <div class="notice" id="notice"><strong>Chế độ dữ liệu dự đoán:</strong> Toàn bộ nến trong file được xem là dự báo. Giá và chỉ báo không phải giá Binance trực tiếp và không phải khuyến nghị giao dịch.</div>
+
+        <section id="empty-state" class="empty">
+            <strong>Chọn file kết quả dự báo để bắt đầu</strong>
+            File cần có các cột timestamps, open, high, low, close; volume và amount là tùy chọn.
+        </section>
+
+        <div id="dashboard" class="dashboard" hidden>
+            <section class="kpis">
+                <article class="card kpi"><div class="kpi-label">Giá đóng cửa đầu tiên</div><div class="kpi-value" id="first-close">—</div><div class="kpi-meta" id="first-time">—</div></article>
+                <article class="card kpi"><div class="kpi-label">Giá đóng cửa cuối cùng</div><div class="kpi-value" id="last-close">—</div><div class="kpi-meta" id="last-time">—</div></article>
+                <article class="card kpi"><div class="kpi-label">Thay đổi toàn khoảng</div><div class="kpi-value" id="total-change">—</div><div class="kpi-meta" id="total-change-pct">—</div></article>
+                <article class="card kpi"><div class="kpi-label">Biên độ cao–thấp</div><div class="kpi-value" id="range-value">—</div><div class="kpi-meta" id="range-meta">—</div></article>
+            </section>
+
+            <section class="workspace">
+                <article class="card">
+                    <div class="panel-head">
+                        <div class="panel-title">Biểu đồ nến OHLC dự đoán</div>
+                        <div class="filters">
+                            <select id="range-filter" aria-label="Khoảng dữ liệu"><option value="all">Toàn bộ</option><option value="24">24 nến cuối</option><option value="48">48 nến cuối</option><option value="96">96 nến cuối</option></select>
+                            <select id="timezone-filter" aria-label="Múi giờ"><option value="Asia/Ho_Chi_Minh">Giờ Việt Nam</option><option value="UTC">UTC</option></select>
+                        </div>
+                    </div>
+                    <div id="forecast-chart"></div>
+                    <div class="chart-foot" id="chart-foot">—</div>
+                </article>
+
+                <aside class="card">
+                    <div class="panel-head"><div class="panel-title">Phân tích chuỗi dự đoán</div></div>
+                    <div class="analytics">
+                        <div class="metric"><div class="metric-label">EMA 9 · EMA 21</div><div class="metric-value" id="ema-value">—</div><div class="metric-note" id="ema-note">—</div></div>
+                        <div class="metric"><div class="metric-label">RSI 14</div><div class="metric-value" id="rsi-value">—</div><div class="metric-note" id="rsi-note">—</div></div>
+                        <div class="metric"><div class="metric-label">MACD (12, 26, 9)</div><div class="metric-value" id="macd-value">—</div><div class="metric-note" id="macd-note">—</div></div>
+                        <div class="metric"><div class="metric-label">Biến động trung bình mỗi nến</div><div class="metric-value" id="volatility-value">—</div><div class="metric-note">Trung bình trị tuyệt đối thay đổi close giữa các nến liền kề.</div></div>
+                        <div class="mini-grid">
+                            <div class="mini"><span>Giá cao nhất</span><strong id="max-high">—</strong></div>
+                            <div class="mini"><span>Giá thấp nhất</span><strong id="min-low">—</strong></div>
+                            <div class="mini"><span>Tổng volume</span><strong id="total-volume">—</strong></div>
+                            <div class="mini"><span>Tổng amount</span><strong id="total-amount">—</strong></div>
+                        </div>
+                        <div class="source" id="source-file">—</div>
+                    </div>
+                </aside>
+            </section>
+
+            <section class="card table-card">
+                <div class="panel-head">
+                    <div class="panel-title">Bảng nến dự đoán</div>
+                    <div class="filters"><input id="table-search" class="search" type="search" placeholder="Lọc timestamp…"><span class="count" id="row-count">0 dòng</span></div>
+                </div>
+                <div class="table-wrap">
+                    <table>
+                        <thead><tr><th>Thời gian</th><th>Open</th><th>High</th><th>Low</th><th>Close</th><th>Thay đổi %</th><th>Volume</th><th>Amount</th></tr></thead>
+                        <tbody id="forecast-table"></tbody>
+                    </table>
+                </div>
+            </section>
+        </div>
+    </main>
+
+    <script>
+        let allRows = [];
+        let loadedFileName = '';
+        let originalCsv = '';
+
+        const numberFormat = new Intl.NumberFormat('en-US', {maximumFractionDigits: 2});
+        const compactFormat = new Intl.NumberFormat('en-US', {notation: 'compact', maximumFractionDigits: 2});
+
+        function parseCsvRow(line) {
+            const values = []; let value = ''; let quoted = false;
+            for (let i = 0; i < line.length; i++) {
+                const character = line[i];
+                if (character === '"') {
+                    if (quoted && line[i + 1] === '"') { value += '"'; i++; }
+                    else quoted = !quoted;
+                } else if (character === ',' && !quoted) { values.push(value.trim()); value = ''; }
+                else value += character;
+            }
+            values.push(value.trim()); return values;
+        }
+
+        function parseCsv(text) {
+            const lines = text.replace(/^\uFEFF/, '').split(/\r?\n/).filter(line => line.trim());
+            if (lines.length < 2) throw new Error('CSV không có dữ liệu.');
+            const headers = parseCsvRow(lines[0]).map(value => value.toLowerCase());
+            const find = (...names) => headers.findIndex(header => names.includes(header));
+            const index = {time: find('timestamps', 'timestamp', 'date', 'time'), open: find('open'), high: find('high'), low: find('low'), close: find('close'), volume: find('volume'), amount: find('amount')};
+            if ([index.time, index.open, index.high, index.low, index.close].some(value => value < 0)) throw new Error('Thiếu cột timestamps/open/high/low/close.');
+            const rows = lines.slice(1).map(line => {
+                const values = parseCsvRow(line); const timestamp = new Date(values[index.time]);
+                return {timestamp, open: Number(values[index.open]), high: Number(values[index.high]), low: Number(values[index.low]), close: Number(values[index.close]), volume: index.volume >= 0 ? Number(values[index.volume]) : 0, amount: index.amount >= 0 ? Number(values[index.amount]) : 0};
+            }).filter(row => !Number.isNaN(row.timestamp.getTime()) && ['open','high','low','close'].every(key => Number.isFinite(row[key])));
+            if (!rows.length) throw new Error('Không có dòng OHLC hợp lệ.');
+            return rows.sort((a, b) => a.timestamp - b.timestamp);
+        }
+
+        function showError(message) {
+            const notice = document.getElementById('notice');
+            notice.classList.add('error');
+            notice.innerHTML = `<strong>Không thể mở dữ liệu:</strong> ${message}`;
+        }
+
+        function clearError() {
+            const notice = document.getElementById('notice');
+            notice.classList.remove('error');
+            notice.innerHTML = '<strong>Chế độ dữ liệu dự đoán:</strong> Toàn bộ nến trong file được xem là dự báo. Giá và chỉ báo không phải giá Binance trực tiếp và không phải khuyến nghị giao dịch.';
+        }
+
+        function ema(values, period) {
+            const factor = 2 / (period + 1); const result = []; let current = values[0];
+            values.forEach((value, index) => { current = index === 0 ? value : value * factor + current * (1 - factor); result.push(current); });
+            return result;
+        }
+
+        function rsi(values, period = 14) {
+            if (values.length <= period) return null;
+            let gains = 0, losses = 0;
+            for (let i = 1; i <= period; i++) { const delta = values[i] - values[i - 1]; gains += Math.max(delta, 0); losses += Math.max(-delta, 0); }
+            let avgGain = gains / period, avgLoss = losses / period;
+            for (let i = period + 1; i < values.length; i++) { const delta = values[i] - values[i - 1]; avgGain = (avgGain * (period - 1) + Math.max(delta, 0)) / period; avgLoss = (avgLoss * (period - 1) + Math.max(-delta, 0)) / period; }
+            if (avgLoss === 0) return 100;
+            return 100 - (100 / (1 + avgGain / avgLoss));
+        }
+
+        function timezoneLabel(timestamp) {
+            const zone = document.getElementById('timezone-filter').value;
+            return new Intl.DateTimeFormat('vi-VN', {timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false}).format(timestamp);
+        }
+
+        function visibleRows() {
+            const value = document.getElementById('range-filter').value;
+            return value === 'all' ? allRows : allRows.slice(-Number(value));
+        }
+
+        function renderDashboard() {
+            const rows = visibleRows(); const closes = rows.map(row => row.close); const ema9 = ema(closes, 9); const ema21 = ema(closes, 21);
+            const first = allRows[0], last = allRows[allRows.length - 1]; const change = last.close - first.close; const changePct = change / first.close * 100;
+            const highs = allRows.map(row => row.high), lows = allRows.map(row => row.low);
+            const changes = allRows.slice(1).map((row, i) => Math.abs((row.close / allRows[i].close - 1) * 100));
+            const fullCloses = allRows.map(row => row.close); const fullEma9 = ema(fullCloses, 9); const fullEma21 = ema(fullCloses, 21);
+            const macdLine = ema(fullCloses, 12).map((value, i) => value - ema(fullCloses, 26)[i]); const signal = ema(macdLine, 9); const currentRsi = rsi(fullCloses);
+
+            document.getElementById('first-close').textContent = numberFormat.format(first.close);
+            document.getElementById('last-close').textContent = numberFormat.format(last.close);
+            document.getElementById('first-time').textContent = timezoneLabel(first.timestamp);
+            document.getElementById('last-time').textContent = timezoneLabel(last.timestamp);
+            const changeElement = document.getElementById('total-change'); changeElement.textContent = `${change >= 0 ? '+' : ''}${numberFormat.format(change)}`; changeElement.className = `kpi-value ${change >= 0 ? 'positive' : 'negative'}`;
+            document.getElementById('total-change-pct').textContent = `${changePct >= 0 ? '+' : ''}${changePct.toFixed(2)}% trên toàn khoảng`;
+            document.getElementById('range-value').textContent = numberFormat.format(Math.max(...highs) - Math.min(...lows));
+            document.getElementById('range-meta').textContent = `${allRows.length} nến`;
+            document.getElementById('ema-value').textContent = `${numberFormat.format(fullEma9.at(-1))} / ${numberFormat.format(fullEma21.at(-1))}`;
+            document.getElementById('ema-note').textContent = fullEma9.at(-1) >= fullEma21.at(-1) ? 'EMA 9 ở trên EMA 21: động lượng tăng theo chuỗi dự báo.' : 'EMA 9 ở dưới EMA 21: động lượng giảm theo chuỗi dự báo.';
+            document.getElementById('rsi-value').textContent = currentRsi === null ? 'Chưa đủ dữ liệu' : currentRsi.toFixed(2);
+            document.getElementById('rsi-note').textContent = currentRsi === null ? 'Cần ít nhất 15 nến để tính RSI 14.' : currentRsi > 70 ? 'RSI trên 70: vùng động lượng cao theo quy tắc tham khảo.' : currentRsi < 30 ? 'RSI dưới 30: vùng động lượng thấp theo quy tắc tham khảo.' : 'RSI nằm trong vùng trung tính.';
+            document.getElementById('macd-value').textContent = `${numberFormat.format(macdLine.at(-1))} / ${numberFormat.format(signal.at(-1))}`;
+            document.getElementById('macd-note').textContent = `Histogram: ${numberFormat.format(macdLine.at(-1) - signal.at(-1))} · MACD ${macdLine.at(-1) >= signal.at(-1) ? 'trên' : 'dưới'} signal.`;
+            document.getElementById('volatility-value').textContent = `${(changes.reduce((a,b) => a+b, 0) / Math.max(changes.length, 1)).toFixed(3)}%`;
+            document.getElementById('max-high').textContent = numberFormat.format(Math.max(...highs));
+            document.getElementById('min-low').textContent = numberFormat.format(Math.min(...lows));
+            document.getElementById('total-volume').textContent = compactFormat.format(allRows.reduce((sum,row) => sum + row.volume, 0));
+            document.getElementById('total-amount').textContent = compactFormat.format(allRows.reduce((sum,row) => sum + row.amount, 0));
+            document.getElementById('source-file').textContent = `Nguồn: ${loadedFileName} · ${allRows.length} dòng hợp lệ`;
+
+            const x = rows.map(row => row.timestamp); const colors = rows.map(row => row.close >= row.open ? '#22d39a' : '#ff5f72');
+            Plotly.react('forecast-chart', [
+                {type:'candlestick', name:'OHLC', x, open:rows.map(r=>r.open), high:rows.map(r=>r.high), low:rows.map(r=>r.low), close:rows.map(r=>r.close), increasing:{line:{color:'#22d39a'}}, decreasing:{line:{color:'#ff5f72'}}, yaxis:'y'},
+                {type:'scatter', mode:'lines', name:'EMA 9', x, y:ema9, line:{color:'#7c9cff', width:1.5}, yaxis:'y'},
+                {type:'scatter', mode:'lines', name:'EMA 21', x, y:ema21, line:{color:'#f5bd4f', width:1.5}, yaxis:'y'},
+                {type:'bar', name:'Volume', x, y:rows.map(r=>r.volume), marker:{color:colors}, opacity:.62, yaxis:'y2'},
+            ], {
+                paper_bgcolor:'#0d182a', plot_bgcolor:'#0d182a', font:{color:'#9fb0ca', size:11},
+                margin:{l:55,r:55,t:20,b:38}, hovermode:'x unified', showlegend:true,
+                legend:{orientation:'h', x:0, y:-.08},
+                xaxis:{gridcolor:'#1b2b42', rangeslider:{visible:false}, tickformat:'%d-%m\n%H:%M'},
+                yaxis:{domain:[.23,1], side:'right', gridcolor:'#1b2b42', tickformat:',.2f'},
+                yaxis2:{domain:[0,.16], side:'right', gridcolor:'#152238', tickformat:'.2s'},
+            }, {responsive:true, displaylogo:false});
+            document.getElementById('chart-foot').textContent = `Đang hiển thị ${rows.length}/${allRows.length} nến dự đoán · Giá mở ${numberFormat.format(rows[0].open)} · Giá đóng ${numberFormat.format(rows.at(-1).close)}`;
+            renderTable();
+        }
+
+        function renderTable() {
+            const query = document.getElementById('table-search').value.trim().toLowerCase();
+            const rows = [...allRows].reverse().filter(row => timezoneLabel(row.timestamp).toLowerCase().includes(query));
+            document.getElementById('forecast-table').innerHTML = rows.map((row, index) => {
+                const chronologicalIndex = allRows.indexOf(row); const previous = chronologicalIndex > 0 ? allRows[chronologicalIndex - 1].close : row.open; const pct = (row.close / previous - 1) * 100;
+                return `<tr><td>${timezoneLabel(row.timestamp)}</td><td>${numberFormat.format(row.open)}</td><td>${numberFormat.format(row.high)}</td><td>${numberFormat.format(row.low)}</td><td>${numberFormat.format(row.close)}</td><td class="${pct >= 0 ? 'positive' : 'negative'}">${pct >= 0 ? '+' : ''}${pct.toFixed(3)}%</td><td>${numberFormat.format(row.volume)}</td><td>${numberFormat.format(row.amount)}</td></tr>`;
+            }).join('');
+            document.getElementById('row-count').textContent = `${rows.length} / ${allRows.length} dòng`;
+        }
+
+        function displayRows(rows, fileName, csvText) {
+            allRows = rows; loadedFileName = fileName; originalCsv = csvText; clearError();
+            const gold = /paxg|gold|vang/i.test(fileName); document.getElementById('asset-icon').textContent = gold ? 'Au' : '₿';
+            document.getElementById('dashboard-title').textContent = `${gold ? 'PAXG/USDT' : 'BTC/USDT'} Forecast Dashboard`;
+            document.getElementById('dashboard-subtitle').textContent = `Phân tích nến dự đoán · ${allRows.length} điểm dữ liệu`;
+            document.getElementById('empty-state').hidden = true; document.getElementById('dashboard').hidden = false; document.getElementById('export-csv').disabled = false;
+            renderDashboard();
+        }
+
+        async function loadFile(file) {
+            try {
+                const csvText = await file.text();
+                displayRows(parseCsv(csvText), file.name, csvText);
+            } catch (error) { showError(error.message); }
+        }
+
+        async function loadServerFile(fileName) {
+            if (!fileName) return;
+            const button = document.getElementById('open-server-file');
+            button.disabled = true; button.textContent = 'Đang mở…';
+            try {
+                const response = await fetch(`/api/forecast-files/${encodeURIComponent(fileName)}`);
+                if (!response.ok) throw new Error('File không tồn tại hoặc không thể đọc.');
+                const csvText = await response.text();
+                displayRows(parseCsv(csvText), fileName, csvText);
+                const url = new URL(window.location); url.searchParams.set('file', fileName); history.replaceState(null, '', url);
+            } catch (error) { showError(error.message); }
+            finally { button.disabled = false; button.textContent = 'Mở file'; }
+        }
+
+        async function populateServerFiles() {
+            const select = document.getElementById('server-file');
+            try {
+                const response = await fetch('/api/forecast-files');
+                if (!response.ok) throw new Error('Không thể tải danh sách file forecast.');
+                const files = await response.json();
+                select.innerHTML = files.length ? files.map(file => `<option value="${file.name}">${file.name} · ${(file.size / 1024).toFixed(1)} KB</option>`).join('') : '<option value="">Chưa có file forecast</option>';
+                const requested = new URLSearchParams(window.location.search).get('file');
+                if (requested && files.some(file => file.name === requested)) select.value = requested;
+                document.getElementById('open-server-file').disabled = !files.length;
+                if (files.length) await loadServerFile(select.value);
+            } catch (error) {
+                select.innerHTML = '<option value="">Không tải được danh sách</option>';
+                showError(error.message);
+            }
+        }
+
+        document.getElementById('csv-file').addEventListener('change', event => { if (event.target.files[0]) loadFile(event.target.files[0]); });
+        document.getElementById('open-server-file').addEventListener('click', () => loadServerFile(document.getElementById('server-file').value));
+        document.getElementById('range-filter').addEventListener('change', renderDashboard);
+        document.getElementById('timezone-filter').addEventListener('change', renderDashboard);
+        document.getElementById('table-search').addEventListener('input', renderTable);
+        document.getElementById('reset-dashboard').addEventListener('click', () => { allRows=[]; originalCsv=''; loadedFileName=''; document.getElementById('csv-file').value=''; document.getElementById('dashboard').hidden=true; document.getElementById('empty-state').hidden=false; document.getElementById('export-csv').disabled=true; Plotly.purge('forecast-chart'); });
+        document.getElementById('export-csv').addEventListener('click', () => { if (!originalCsv) return; const link=document.createElement('a'); link.href=URL.createObjectURL(new Blob([originalCsv], {type:'text/csv'})); link.download=loadedFileName || 'forecast.csv'; link.click(); URL.revokeObjectURL(link.href); });
+        populateServerFiles();
+    </script>
+</body>
+</html>

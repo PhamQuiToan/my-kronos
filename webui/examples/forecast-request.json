@@ -1,0 +1,12 @@
+{
+  "symbol": "BTC",
+  "timeframe": "M15",
+  "pred_len": 2,
+  "temperature": 1.0,
+  "top_p": 0.9,
+  "sample_count": 1,
+  "candles": [
+    {"timestamp": "2026-10-30T00:00:00Z", "open": 100, "high": 110, "low": 90, "close": 101, "volume": 10},
+    {"timestamp": "2026-10-30T00:15:00Z", "open": 101, "high": 111, "low": 91, "close": 102, "volume": 11}
+  ]
+}

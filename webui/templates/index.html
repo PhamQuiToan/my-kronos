@@ -204,6 +204,57 @@
             height: 600px;
         }
 
+        .csv-viewer {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            margin-bottom: 30px;
+        }
+
+        .csv-viewer h2 {
+            color: #4a5568;
+            margin-bottom: 16px;
+            border-bottom: 2px solid #e2e8f0;
+            padding-bottom: 10px;
+        }
+
+        .csv-viewer-controls {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin-bottom: 15px;
+        }
+
+        .csv-file-input {
+            flex: 1;
+            min-width: 260px;
+            padding: 10px;
+            border: 2px dashed #a3bffa;
+            border-radius: 8px;
+            background: #f7fafc;
+        }
+
+        .csv-summary {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        .csv-summary-item {
+            background: #f7fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 12px;
+        }
+
+        #csv-result-chart {
+            width: 100%;
+            height: 650px;
+        }
+
         .data-info {
             background: #f7fafc;
             border: 1px solid #e2e8f0;
@@ -443,6 +494,7 @@
         <div class="header">
             <h1>🚀 Kronos Financial Prediction Web UI</h1>
             <p>AI-based financial K-line data prediction analysis platform</p>
+            <p style="margin-top: 14px;"><a href="/dashboard" class="btn btn-secondary">Mở Forecast Dashboard</a></p>
         </div>
 
         <div class="main-content">
@@ -631,6 +683,29 @@
                 </div>
             </div>
         </div>
+
+        <section class="csv-viewer" aria-labelledby="csv-viewer-title">
+            <h2 id="csv-viewer-title">📂 Xem biểu đồ từ CSV kết quả</h2>
+            <div class="csv-viewer-controls">
+                <label for="csv-result-file"><strong>Chọn file CSV:</strong></label>
+                <input
+                    class="csv-file-input"
+                    id="csv-result-file"
+                    type="file"
+                    accept=".csv,text/csv"
+                >
+                <button id="clear-csv-chart" class="btn btn-secondary" type="button">
+                    Xóa biểu đồ
+                </button>
+            </div>
+            <p class="form-text">
+                Hỗ trợ CSV có các cột timestamps, open, high, low, close; volume là tùy chọn.
+                File chỉ được đọc trong trình duyệt và không tải lên server.
+            </p>
+            <div id="csv-viewer-status" class="status info" role="status" style="display: none;"></div>
+            <div id="csv-summary" class="csv-summary" style="display: none;"></div>
+            <div id="csv-result-chart" aria-label="Biểu đồ dữ liệu dự báo từ CSV"></div>
+        </section>
     </div>
 
     <script>
@@ -1196,6 +1271,9 @@
             
             // Prediction button
             document.getElementById('predict-btn').addEventListener('click', startPrediction);
+
+            document.getElementById('csv-result-file').addEventListener('change', handleCsvFile);
+            document.getElementById('clear-csv-chart').addEventListener('click', clearCsvChart);
             
             // Prediction quality parameter sliders
             document.getElementById('temperature').addEventListener('input', function() {
@@ -1209,6 +1287,170 @@
             // Update slider when lookback window size changes
             document.getElementById('lookback').addEventListener('input', updateSliderFromInputs);
             document.getElementById('pred-len').addEventListener('input', updateSliderFromInputs);
+        }
+
+        function showCsvStatus(type, message) {
+            const status = document.getElementById('csv-viewer-status');
+            status.className = `status ${type}`;
+            status.textContent = message;
+            status.style.display = 'block';
+        }
+
+        function parseCsvRow(line) {
+            const values = [];
+            let value = '';
+            let quoted = false;
+
+            for (let index = 0; index < line.length; index++) {
+                const character = line[index];
+                if (character === '"') {
+                    if (quoted && line[index + 1] === '"') {
+                        value += '"';
+                        index++;
+                    } else {
+                        quoted = !quoted;
+                    }
+                } else if (character === ',' && !quoted) {
+                    values.push(value.trim());
+                    value = '';
+                } else {
+                    value += character;
+                }
+            }
+            values.push(value.trim());
+            return values;
+        }
+
+        function parsePredictionCsv(text) {
+            const lines = text.replace(/^\uFEFF/, '').split(/\r?\n/).filter(line => line.trim());
+            if (lines.length < 2) {
+                throw new Error('CSV không có dữ liệu.');
+            }
+
+            const headers = parseCsvRow(lines[0]).map(header => header.toLowerCase());
+            const timestampIndex = headers.findIndex(header =>
+                ['timestamps', 'timestamp', 'date', 'time'].includes(header)
+            );
+            const indexes = Object.fromEntries(
+                ['open', 'high', 'low', 'close', 'volume'].map(column => [
+                    column,
+                    headers.indexOf(column),
+                ])
+            );
+
+            if (timestampIndex < 0 || ['open', 'high', 'low', 'close'].some(
+                column => indexes[column] < 0
+            )) {
+                throw new Error('CSV phải có timestamps, open, high, low và close.');
+            }
+
+            const rows = [];
+            for (const line of lines.slice(1)) {
+                const values = parseCsvRow(line);
+                const timestamp = new Date(values[timestampIndex]);
+                const row = {
+                    timestamp,
+                    open: Number(values[indexes.open]),
+                    high: Number(values[indexes.high]),
+                    low: Number(values[indexes.low]),
+                    close: Number(values[indexes.close]),
+                    volume: indexes.volume >= 0 ? Number(values[indexes.volume]) : null,
+                };
+                if (!Number.isNaN(timestamp.getTime()) && ['open', 'high', 'low', 'close'].every(
+                    column => Number.isFinite(row[column])
+                )) {
+                    rows.push(row);
+                }
+            }
+
+            if (!rows.length) {
+                throw new Error('Không tìm thấy dòng OHLC hợp lệ trong CSV.');
+            }
+            rows.sort((left, right) => left.timestamp - right.timestamp);
+            return rows;
+        }
+
+        function renderCsvChart(rows, fileName) {
+            const timestamps = rows.map(row => row.timestamp);
+            const hasVolume = rows.some(row => Number.isFinite(row.volume));
+            const traces = [{
+                type: 'candlestick',
+                name: 'Dự báo OHLC',
+                x: timestamps,
+                open: rows.map(row => row.open),
+                high: rows.map(row => row.high),
+                low: rows.map(row => row.low),
+                close: rows.map(row => row.close),
+                increasing: {line: {color: '#16a34a'}},
+                decreasing: {line: {color: '#dc2626'}},
+                yaxis: 'y',
+            }];
+
+            if (hasVolume) {
+                traces.push({
+                    type: 'bar',
+                    name: 'Volume',
+                    x: timestamps,
+                    y: rows.map(row => row.volume),
+                    marker: {color: 'rgba(99, 102, 241, 0.45)'},
+                    yaxis: 'y2',
+                });
+            }
+
+            Plotly.newPlot('csv-result-chart', traces, {
+                title: {text: fileName},
+                height: 650,
+                margin: {l: 65, r: 30, t: 55, b: 55},
+                hovermode: 'x unified',
+                xaxis: {
+                    title: 'Thời gian',
+                    rangeslider: {visible: false},
+                },
+                yaxis: {
+                    title: 'Giá',
+                    domain: hasVolume ? [0.25, 1] : [0, 1],
+                },
+                yaxis2: {
+                    title: 'Volume',
+                    domain: [0, 0.18],
+                    anchor: 'x',
+                },
+                legend: {orientation: 'h'},
+            }, {responsive: true, displaylogo: false});
+
+            const firstClose = rows[0].close;
+            const lastClose = rows[rows.length - 1].close;
+            const change = ((lastClose / firstClose) - 1) * 100;
+            const summary = document.getElementById('csv-summary');
+            summary.innerHTML = `
+                <div class="csv-summary-item"><strong>Số nến</strong><br>${rows.length}</div>
+                <div class="csv-summary-item"><strong>Bắt đầu</strong><br>${rows[0].timestamp.toLocaleString()}</div>
+                <div class="csv-summary-item"><strong>Kết thúc</strong><br>${rows[rows.length - 1].timestamp.toLocaleString()}</div>
+                <div class="csv-summary-item"><strong>Biến động Close</strong><br>${change >= 0 ? '+' : ''}${change.toFixed(2)}%</div>
+            `;
+            summary.style.display = 'grid';
+        }
+
+        async function handleCsvFile(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            try {
+                const rows = parsePredictionCsv(await file.text());
+                renderCsvChart(rows, file.name);
+                showCsvStatus('success', `Đã đọc ${rows.length} nến từ ${file.name}.`);
+            } catch (error) {
+                Plotly.purge('csv-result-chart');
+                document.getElementById('csv-summary').style.display = 'none';
+                showCsvStatus('warning', error.message);
+            }
+        }
+
+        function clearCsvChart() {
+            document.getElementById('csv-result-file').value = '';
+            document.getElementById('csv-summary').style.display = 'none';
+            document.getElementById('csv-viewer-status').style.display = 'none';
+            Plotly.purge('csv-result-chart');
         }
 
         // Display status information
