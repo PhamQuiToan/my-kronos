@@ -1,0 +1,19 @@
+[Unit]
+Description=Kronos daily fine-tuning and evaluation
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/kronos
+Environment=PYTHONUNBUFFERED=1
+Environment=KRONOS_LEARNING_DIR=/opt/kronos/webui/learning_state
+Environment=KRONOS_TRAIN_DEVICE=cpu
+Environment=OMP_NUM_THREADS=2
+Environment=MKL_NUM_THREADS=2
+ExecStart=/opt/kronos/.venv/bin/python -m webui.learning_worker run
+Nice=10
+CPUQuota=100%
+TimeoutStartSec=8h
+KillMode=control-group

@@ -1,0 +1,11 @@
+[Unit]
+Description=Check Kronos training data every day
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 UTC
+Persistent=true
+RandomizedDelaySec=5m
+Unit=kronos-learning.service
+
+[Install]
+WantedBy=timers.target

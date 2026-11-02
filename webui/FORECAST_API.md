@@ -45,6 +45,11 @@ File request mẫu dùng giá minh họa; thay bằng dữ liệu thị trườn
 
 ## Request
 
+Fine-tune nền tùy chọn: xem [LEARNING.md](LEARNING.md) để bật thu thập nến thật,
+worker theo lịch, đánh giá và rollback. Request hỗ trợ `learn` (boolean, mặc định
+false); chỉ đặt true cho dữ liệu thị trường thực. Model response có thể là đường
+dẫn checkpoint riêng theo symbol/timeframe khi tính năng này được bật.
+
 ### Log khi gọi API
 
 Mỗi lần gọi endpoint được ghi vào `webui/logs/forecast_api.log`, kể cả khi không
@@ -88,7 +93,7 @@ Sau khi cập nhật code, khởi động lại server nếu không dùng tự �
 
 ## Model và giới hạn vận hành
 
-Model cố định `NeoQuasar/Kronos-small`, tokenizer
+Model mặc định `NeoQuasar/Kronos-base` (hoặc checkpoint đã qua gate khi bật learning), tokenizer
 `NeoQuasar/Kronos-Tokenizer-base`, context 512, device mặc định CPU.
 `KRONOS_API_DEVICE` có thể chỉ định device được PyTorch hỗ trợ.
 Model được lazy-load và cache riêng cho API, không bị đổi bởi `/api/load-model`
@@ -117,7 +122,7 @@ Ví dụ cấu trúc (giá dự báo minh họa, kết quả thật phụ thuộ
   "request_id": "<server-generated-id>",
   "symbol": "BTC",
   "timeframe": "M15",
-  "model": "NeoQuasar/Kronos-small",
+  "model": "NeoQuasar/Kronos-base",
   "generated_at": "2026-10-30T00:16:00+00:00",
   "last_input_timestamp": "2026-10-30T00:15:00+00:00",
   "parameters": {"lookback": 2, "pred_len": 1, "temperature": 1.0, "top_p": 0.9, "sample_count": 1},

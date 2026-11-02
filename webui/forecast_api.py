@@ -18,6 +18,7 @@ from flask import Blueprint, Flask, current_app, g, jsonify, request
 from werkzeug.exceptions import HTTPException
 
 from webui.api_token import read_token
+from webui.learning import BASE_MODEL, Store, enabled as learning_enabled
 
 TIMEFRAMES = {**{f'M{n}': n * 60 for n in (1, 5, 15, 30)},
               **{f'H{n}': n * 3600 for n in (1, 4)}, 'D1': 86400}
@@ -67,11 +68,11 @@ def forecast_logger():
     return logger
 
 
-def load_predictor():
+def load_predictor(model_path=BASE_MODEL):
     # Lazy import keeps API validation and tests independent of model installation.
     from model import Kronos, KronosPredictor, KronosTokenizer
     tokenizer = KronosTokenizer.from_pretrained('NeoQuasar/Kronos-Tokenizer-base')
-    model = Kronos.from_pretrained('NeoQuasar/Kronos-base')
+    model = Kronos.from_pretrained(model_path)
     tokenizer.eval()
     model.eval()
     return KronosPredictor(model, tokenizer, device=os.getenv('KRONOS_API_DEVICE', 'cpu'), max_context=512)
@@ -80,8 +81,10 @@ def load_predictor():
 def validate(data):
     if not isinstance(data, dict):
         raise ValueError('JSON body must be an object')
-    if set(data) - {'symbol', 'timeframe', 'candles', 'pred_len', 'temperature', 'top_p', 'sample_count'}:
+    if set(data) - {'symbol', 'timeframe', 'candles', 'pred_len', 'temperature', 'top_p', 'sample_count', 'learn'}:
         raise ValueError('Unknown request fields')
+    if type(data.get('learn', False)) is not bool:
+        raise ValueError('learn must be a boolean declaring real market candles')
     if data.get('symbol') not in ('BTC', 'GOLD'):
         raise ValueError('symbol must be BTC or GOLD')
     if not isinstance(data.get('timeframe'), str) or data['timeframe'] not in TIMEFRAMES:
@@ -146,6 +149,8 @@ def create_forecast_blueprint(predictor_factory=load_predictor):
     rate_lock = threading.Lock()
     arrivals = deque()
     cached = None
+    cached_model = None
+    learning_store = Store() if learning_enabled() else None
 
     def fail(code, message, status):
         return jsonify(error={'code': code, 'message': message}, request_id=g.forecast_request_id), status
@@ -196,11 +201,25 @@ def create_forecast_blueprint(predictor_factory=load_predictor):
         current_app.logger.error('Forecast request failed request_id=%s', g.forecast_request_id)
         return fail('internal_error', 'Forecast request failed', 500)
 
-    def run(history, stamps, future, params):
-        nonlocal cached
+    def run(history, stamps, future, params, symbol, timeframe):
+        nonlocal cached, cached_model
         try:
-            if cached is None:
-                cached = predictor_factory()
+            model_path = learning_store.active(symbol, timeframe) if learning_store else BASE_MODEL
+            if cached is None or cached_model != model_path:
+                try:
+                    replacement = (load_predictor(model_path) if predictor_factory is load_predictor
+                                   else predictor_factory())
+                except Exception:
+                    # Never serve a model cached for another market as fallback.
+                    if cached is None or cached_model != BASE_MODEL:
+                        cached = None
+                        cached = (load_predictor(BASE_MODEL) if predictor_factory is load_predictor
+                                  else predictor_factory())
+                    model_path = BASE_MODEL
+                    access_log.warning('event=model_load_fallback symbol=%s timeframe=%s', symbol, timeframe)
+                else:
+                    cached = replacement
+                cached_model = model_path
             result = cached.predict(df=history, x_timestamp=stamps.dt.tz_localize(None),
                                     y_timestamp=future.dt.tz_localize(None), pred_len=params['pred_len'],
                                     T=params['temperature'], top_p=params['top_p'],
@@ -214,7 +233,7 @@ def create_forecast_blueprint(predictor_factory=load_predictor):
                 if not all(math.isfinite(v) for v in values.values()):
                     raise RuntimeError('Nonfinite model output')
                 points.append({'timestamp': stamp.isoformat(), **values})
-            return points
+            return points, cached_model
         finally:
             slot.release()
 
@@ -248,15 +267,26 @@ def create_forecast_blueprint(predictor_factory=load_predictor):
             current_app.logger.warning('Forecast rejected request_id=%s reason=%s',
                                        g.forecast_request_id, message)
             return fail('invalid_request', message, 400)
+        if data.get('learn'):
+            if learning_store is None:
+                return fail('learning_disabled', 'Enable KRONOS_LEARNING_ENABLED to collect training data', 503)
+            try:
+                inserted = learning_store.collect(data['symbol'], data['timeframe'], history, stamps,
+                                                  TIMEFRAMES[data['timeframe']])
+                access_log.info('request_id=%s event=learning_collected inserted=%s',
+                                g.forecast_request_id, inserted)
+            except Exception:
+                access_log.error('request_id=%s event=learning_store_failed', g.forecast_request_id)
+                return fail('learning_unavailable', 'Could not persist training candles; retry later', 503)
         if not slot.acquire(blocking=False):
             return fail('busy', 'Forecast worker is busy; retry later', 503)
         try:
-            job = executor.submit(run, history, stamps, future, params)
+            job = executor.submit(run, history, stamps, future, params, data['symbol'], data['timeframe'])
         except Exception:
             slot.release()
             return fail('unavailable', 'Forecast worker is unavailable', 503)
         try:
-            points = job.result(timeout=current_app.config.get('FORECAST_TIMEOUT_SECONDS', 120))
+            points, model_path = job.result(timeout=current_app.config.get('FORECAST_TIMEOUT_SECONDS', 120))
         except TimeoutError:
             # Keep the slot until inference actually finishes; never queue more work.
             return fail('timeout', 'Forecast deadline exceeded', 504)
@@ -266,7 +296,7 @@ def create_forecast_blueprint(predictor_factory=load_predictor):
         return jsonify(request_id=g.forecast_request_id, symbol=data['symbol'], timeframe=data['timeframe'],
                        generated_at=pd.Timestamp.now(tz='UTC').isoformat(),
                        last_input_timestamp=stamps.iloc[-1].isoformat(),
-                       model='NeoQuasar/Kronos-base', parameters={**params, 'lookback': len(history)},
+                       model=model_path, parameters={**params, 'lookback': len(history)},
                        forecast=points)
 
     return bp
