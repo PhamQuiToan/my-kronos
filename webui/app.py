@@ -30,6 +30,7 @@ from webui.forecast_api import create_forecast_blueprint
 app.register_blueprint(create_forecast_blueprint())
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DATA_DIR = PROJECT_ROOT / 'data'
 
 # Global variables to store models
 tokenizer = None
@@ -66,13 +67,12 @@ AVAILABLE_MODELS = {
 
 def load_data_files():
     """Scan data directory and return available data files"""
-    data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data')
     data_files = []
     
-    if os.path.exists(data_dir):
-        for file in os.listdir(data_dir):
+    if DATA_DIR.exists():
+        for file in os.listdir(DATA_DIR):
             if file.endswith(('.csv', '.feather')):
-                file_path = os.path.join(data_dir, file)
+                file_path = os.path.join(DATA_DIR, file)
                 file_size = os.path.getsize(file_path)
                 data_files.append({
                     'name': file,
@@ -81,6 +81,25 @@ def load_data_files():
                 })
     
     return data_files
+
+
+def resolve_data_file(file_path):
+    """Resolve a client-selected data file without allowing reads outside DATA_DIR."""
+    if not isinstance(file_path, str) or not file_path.strip():
+        return None
+    try:
+        data_dir = DATA_DIR.resolve(strict=True)
+        candidate = Path(file_path)
+        if not candidate.is_absolute():
+            candidate = data_dir / candidate
+        resolved = candidate.resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if resolved.parent != data_dir or not resolved.is_file():
+        return None
+    if resolved.suffix.lower() not in {'.csv', '.feather'}:
+        return None
+    return resolved
 
 
 def load_forecast_files():
@@ -395,8 +414,12 @@ def load_data():
         
         if not file_path:
             return jsonify({'error': 'File path cannot be empty'}), 400
+
+        file_path = resolve_data_file(file_path)
+        if file_path is None:
+            return jsonify({'error': 'Select a CSV or Feather file from the data directory'}), 400
         
-        df, error = load_data_file(file_path)
+        df, error = load_data_file(str(file_path))
         if error:
             return jsonify({'error': error}), 400
         
@@ -465,9 +488,13 @@ def predict():
         
         if not file_path:
             return jsonify({'error': 'File path cannot be empty'}), 400
+
+        file_path = resolve_data_file(file_path)
+        if file_path is None:
+            return jsonify({'error': 'Select a CSV or Feather file from the data directory'}), 400
         
         # Load data
-        df, error = load_data_file(file_path)
+        df, error = load_data_file(str(file_path))
         if error:
             return jsonify({'error': error}), 400
         
