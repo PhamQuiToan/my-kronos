@@ -180,6 +180,30 @@ bận hoặc lỗi nạp/chạy model; 504 timeout; 500 lỗi nội bộ ngoài 
 Token được so sánh constant-time trên SHA-256 digest; không ghi token hoặc exception
 chứa dữ liệu nhạy cảm vào log. Đối chiếu lỗi bằng request_id.
 
+### Chi tiết mã lỗi
+
+Mọi lỗi API có cấu trúc `{"request_id": "...", "error": {"code": "...", "message": "..."}}`.
+Dùng `request_id` để đối chiếu với log; `message` cho biết chi tiết lỗi hợp lệ
+để client xử lý. Các mã có thể trả về:
+
+| HTTP | `error.code` | Nguyên nhân thường gặp / cách xử lý |
+|---|---|---|
+| 400 | `invalid_request` | JSON sai định dạng, body không phải object, có field không hỗ trợ, hoặc giá trị request không hợp lệ. Kiểm tra `message`; thường gặp: `symbol`/`timeframe` sai, `candles` không có 2–512 nến, timestamp sai thứ tự/khoảng cách, OHLCV không hợp lệ, hoặc tham số forecast nằm ngoài giới hạn. |
+| 401 | `unauthorized` | Header `Authorization` thiếu hoặc không chứa token hợp lệ. Gửi token đã cấu hình theo định dạng xác thực Bearer. Response có header `WWW-Authenticate: Bearer`. |
+| 413 | `payload_too_large` | Request vượt giới hạn 512 KiB. Giảm số nến hoặc kích thước body. |
+| 415 | `unsupported_media_type` | Request không dùng `Content-Type: application/json`. |
+| 429 | `rate_limited` | Đã vượt 10 request đã xác thực trong 60 giây trên cùng process. Chờ theo `Retry-After: 60` rồi thử lại; không retry liên tục. |
+| 503 | `unavailable` | Chưa cấu hình token API hợp lệ, hoặc executor chạy forecast không khả dụng. Kiểm tra cấu hình và trạng thái server. |
+| 503 | `busy` | Worker đang xử lý forecast khác; API không xếp hàng request. Thử lại sau khi request đang chạy hoàn tất. |
+| 503 | `learning_unavailable` | Learning đang bật nhưng API không lưu được nến vào SQLite. Kiểm tra quyền ghi/dung lượng thư mục learning state và log; sau khi khắc phục có thể gửi lại request. |
+| 503 | `forecast_failed` | Không nạp được model hoặc inference thất bại/cho output không hợp lệ. Kiểm tra model, device, log và `request_id`; lỗi này không trả chi tiết exception nội bộ. |
+| 504 | `timeout` | Forecast quá deadline (mặc định 120 giây). Thread inference không bị hủy an toàn, worker vẫn bị giữ cho đến khi chạy xong; request tiếp theo trong lúc đó có thể nhận `busy`. |
+| 500 | `internal_error` | Lỗi nội bộ ngoài các trường hợp trên. Gửi `request_id` cho quản trị viên để đối chiếu log. |
+| Theo HTTP exception | `http_error` | HTTP exception được chuyển qua handler của blueprint; ví dụ method không hỗ trợ có thể trả mã này cùng status HTTP tương ứng. Kiểm tra URL và dùng `POST /api/forecast`. |
+
+Một số lỗi kết nối/proxy có thể phát sinh trước khi request tới API và không có
+cấu trúc JSON hoặc `request_id` của endpoint.
+
 ## Kiểm thử
 
 ```bash
