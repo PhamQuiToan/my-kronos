@@ -268,12 +268,6 @@ def create_forecast_blueprint(predictor_factory=load_predictor):
         raw = request.stream.read(MAX_BYTES + 1)
         if len(raw) > MAX_BYTES:
             return fail('payload_too_large', 'Request limit is 512 KiB', 413)
-        access_log.info('request_id=%s event=input body=%s',
-                        g.forecast_request_id,
-                        json.dumps(raw.decode('utf-8', errors='replace'), ensure_ascii=False))
-        current_app.logger.debug(
-            'Forecast request input request_id=%s body=%s',
-            g.forecast_request_id, raw.decode('utf-8', errors='replace'))
         try:
             data = json.loads(raw)
         except (ValueError, TypeError, RecursionError):

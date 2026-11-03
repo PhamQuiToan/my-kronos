@@ -51,7 +51,7 @@ class ForecastAPITest(unittest.TestCase):
         self.assertEqual([r.status_code for r in responses], [200, 400, 401])
         contents = self.log_path.read_text()
         for response in responses:
-            expected_lines = {200: 4, 400: 3, 401: 2}[response.status_code]
+            expected_lines = {200: 3, 400: 2, 401: 2}[response.status_code]
             self.assertEqual(contents.count(response.get_json()['request_id']), expected_lines)
             self.assertIn(f'status={response.status_code}', contents)
         self.assertIn('symbol must be BTC or GOLD', contents)
@@ -59,17 +59,14 @@ class ForecastAPITest(unittest.TestCase):
         self.assertNotIn('test-only-secret', contents)
         self.assertNotIn('Authorization', contents)
 
-    def test_file_logs_invalid_candle_input(self):
-        import json
+    def test_file_logs_do_not_include_request_body(self):
         self.body['candles'].reverse()
         response = self.post()
         self.assertEqual(response.status_code, 400)
-        lines = self.log_path.read_text().splitlines()
-        inputs = [line for line in lines if 'event=input body=' in line]
-        self.assertEqual(len(inputs), 1)
-        self.assertIn(response.get_json()['request_id'], inputs[0])
-        raw = json.loads(inputs[0].split('event=input body=', 1)[1])
-        self.assertEqual(json.loads(raw), self.body)
+        contents = self.log_path.read_text()
+        self.assertIn(response.get_json()['request_id'], contents)
+        self.assertNotIn('event=input body=', contents)
+        self.assertNotIn('"timestamp": "2026-10-30T00:00:00Z"', contents)
 
     def factory(self):
         self.loads += 1
@@ -163,14 +160,14 @@ class ForecastAPITest(unittest.TestCase):
                 self.assertEqual(response.status_code, 400)
         self.assertEqual(self.loads, 0)
 
-    def test_debug_logs_authenticated_request_body(self):
+    def test_debug_logs_do_not_include_request_body(self):
         body = copy.deepcopy(self.body)
         body['timeframe'] = 'M7'
         with self.assertLogs(self.app.logger, level='DEBUG') as captured:
             response = self.post(body=body)
         self.assertEqual(response.status_code, 400)
         self.assertIn(response.get_json()['request_id'], captured.output[0])
-        self.assertIn('"timeframe": "M7"', captured.output[0])
+        self.assertNotIn('"timeframe": "M7"', '\n'.join(captured.output))
 
     def test_model_failure(self):
         self.error = True

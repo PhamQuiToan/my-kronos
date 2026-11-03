@@ -12,9 +12,8 @@ export KRONOS_API_DEVICE=cpu
 .venv/bin/python -m flask --app webui.forecast_api:create_app --debug run --host 127.0.0.1 --port 7071
 ```
 
-Ở chế độ debug, API ghi body request đã xác thực vào log ở mức `DEBUG`, kèm `request_id`
-để đối chiếu với response. Log không ghi header `Authorization`; body có thể chứa
-dữ liệu đầu vào nhạy cảm, vì vậy chỉ bật debug khi phát triển cục bộ, không bật ở production.
+API không ghi nội dung body request vào log, kể cả khi bật debug. Log không ghi
+header `Authorization`; dùng `request_id` để đối chiếu request và response.
 
 TOKEN được tạo ngẫu nhiên và lưu trong `webui/.api_token`, quyền file `0600`
 (chỉ chủ sở hữu đọc/ghi). File được loại khỏi Git; không chia sẻ hoặc commit file này.
@@ -56,12 +55,9 @@ Mỗi lần gọi endpoint được ghi vào `webui/logs/forecast_api.log`, kể
 bật debug. Log có dòng bắt đầu và kết thúc, `request_id`, HTTP status, thời gian
 xử lý, mã lỗi và lý do từ chối (`reason`). File tự tạo khi có request đầu tiên;
 xoay vòng ở 5 MiB và giữ tối đa 3 bản cũ. Thư mục log đã được bỏ qua bởi Git.
-File log ghi toàn bộ body JSON của request đã xác thực, trong giới hạn 512 KiB,
-ở dòng `event=input body=...`, kể cả khi dữ liệu nến không hợp lệ và không bật debug.
-Body được escape thành chuỗi JSON trên một dòng, giữ nguyên thứ tự nến để chẩn đoán.
 Request bị từ chối trước bước đọc body (ví dụ sai token, vượt quota hoặc quá lớn)
-chỉ có log trạng thái. Không ghi header Authorization; body có thể chứa dữ liệu
-nhạy cảm nên không gửi secret trong body hoặc chia sẻ log công khai.
+cũng chỉ có log trạng thái. API không ghi dữ liệu nến hoặc trường request vào access
+log hay debug log; chỉ ghi lý do validation đã chuẩn hóa, không bao gồm giá trị input.
 
 ```bash
 tail -f webui/logs/forecast_api.log
